@@ -1,170 +1,130 @@
+import streamlit as st
+import fitz  # PyMuPDF
 import os
-import sys
-import subprocess
-import glob
+import io
+import zipfile
 
-try:
-    import fitz  # PyMuPDF
-except ImportError:
-    print("Đang cài đặt thư viện cần thiết (PyMuPDF)...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "pymupdf"])
-    import fitz
+# --- CẤU HÌNH TRANG ---
+st.set_page_config(page_title="Phần mềm xử lý PDF - Mr Đạt", page_icon="📄", layout="centered")
 
-def find_ghostscript():
+# --- PHẦN THÔNG TIN BẢN QUYỀN (SIDEBAR) ---
+st.sidebar.image("https://cdn-icons-png.flaticon.com/512/337/337946.png", width=100)
+st.sidebar.title("Thông tin tác giả")
+st.sidebar.info(
     """
-    Tìm đường dẫn thực thi của Ghostscript trên Windows.
+    **Mr Đạt**
+    - 📞 Hotline: **0986.053.006**
+    - 🏢 Chức vụ: Chuyên viên BHXH Thuận An
+    - 🛠️ Công cụ: Nén & Cắt PDF chuyên nghiệp
     """
-    # Thử lệnh trực tiếp (nếu đã có trong PATH)
-    try:
-        subprocess.run(["gs", "--version"], capture_output=True, check=True)
-        return "gs"
-    except:
-        pass
+)
 
-    # Tìm trong các thư mục cài đặt mặc định trên Windows
-    possible_paths = [
-        "C:\\Program Files\\gs\\gs*\\bin\\gswin64c.exe",
-        "C:\\Program Files (x86)\\gs\\gs*\\bin\\gswin32c.exe"
-    ]
-    
-    for path in possible_paths:
-        matches = glob.glob(path)
-        if matches:
-            # Lấy bản mới nhất (thường là cái cuối cùng trong danh sách đã sort)
-            return sorted(matches)[-1]
-            
-    return None
+st.title("📄 Công Cụ Xử Lý PDF Chuyên Nghiệp")
+st.markdown("---")
 
-def compress_pdf_ghostscript(input_path, output_path, power=4):
-    """
-    Sử dụng Ghostscript để nén PDF xuống mức cực thấp.
-    power: 4 là mức 'screen' (72 dpi) - nhỏ nhất có thể.
-    """
-    gs_executable = find_ghostscript()
-    
-    if not gs_executable:
-        print("Lỗi: Không tìm thấy Ghostscript. Hãy đảm bảo bạn đã cài đặt nó.")
-        return None
+# --- GIAO DIỆN CHỌN CHỨC NĂNG ---
+option = st.selectbox(
+    "Chọn tính năng bạn muốn sử dụng:",
+    ("Nén PDF (Giảm dung lượng)", "Cắt PDF (Chia nhỏ file)")
+)
 
-    quality = {
-        0: "/default",
-        1: "/prepress",
-        2: "/printer",
-        3: "/ebook",
-        4: "/screen"
-    }
+# --- HÀM XỬ LÝ NÉN ---
+def compress_pdf_logic(input_bytes, dpi=72):
+    doc = fitz.open(stream=input_bytes, filetype="pdf")
+    out_doc = fitz.open()
     
-    print(f"--- Đang nén bằng Ghostscript: {gs_executable} ---")
-    print(f"--- Chế độ nén: {quality[power]} ---")
-    
-    gs_command = [
-        gs_executable, 
-        "-sDEVICE=pdfwrite", 
-        "-dCompatibilityLevel=1.4",
-        f"-dPDFSETTINGS={quality[power]}",
-        "-dNOPAUSE", "-dQUIET", "-dBATCH",
-        f"-sOutputFile={output_path}",
-        input_path
-    ]
-    
-    try:
-        subprocess.run(gs_command, check=True)
-        if os.path.exists(output_path):
-            final_size = os.path.getsize(output_path) / (1024 * 1024)
-            print(f"Thành công! Dung lượng file sau nén: {final_size:.2f} MB")
-            return final_size
-    except Exception as e:
-        print(f"Lỗi khi chạy Ghostscript: {e}")
-        return None
-
-if __name__ == "__main__":
-    # Đảm bảo tên file đúng với thực tế của bạn
-    input_file = "nen 2.pdf" 
-    if not os.path.exists(input_file) and os.path.exists("nen 1"):
-        input_file = "nen 2"
+    for page in doc:
+        rect = page.rect
+        new_page = out_doc.new_page(width=rect.width, height=rect.height)
+        # Rasterize trang với DPI thấp để nén mạnh
+        pix = page.get_pixmap(matrix=fitz.Matrix(dpi/72, dpi/72)) 
+        new_page.insert_image(rect, pixmap=pix)
         
-    output_file = "nen_2_ket_qua_cuoi.pdf"
+    output_buffer = io.BytesIO()
+    out_doc.save(output_buffer, garbage=4, deflate=True, clean=True)
+    out_doc.close()
+    doc.close()
+    return output_buffer.getvalue()
 
-    if not os.path.exists(input_file):
-        print(f"Lỗi: Không tìm thấy file '{input_file}' trong thư mục này.")
-        print("Danh sách file đang có:", os.listdir("."))
-        sys.exit(1)
-
-    # Chạy nén bằng Ghostscript trực tiếp (Bỏ qua nén ảnh bằng Python vì GS hiệu quả hơn)
-    print(f"Bắt đầu nén file: {input_file} (Dung lượng gốc: {os.path.getsize(input_file)/(1024*1024):.2f} MB)")
+# --- HÀM XỬ LÝ CẮT ---
+def split_pdf_logic(input_bytes, num_parts=3):
+    doc = fitz.open(stream=input_bytes, filetype="pdf")
+    total_pages = len(doc)
+    pages_per_part = total_pages // num_parts
     
-    # Ưu tiên mức nén cực mạnh (power=4)
-    result_size = compress_pdf_ghostscript(input_file, output_file, power=4)
+    output_files = []
+    for i in range(num_parts):
+        start_page = i * pages_per_part
+        end_page = total_pages if i == num_parts - 1 else (i + 1) * pages_per_part
+        
+        new_doc = fitz.open()
+        new_doc.insert_pdf(doc, from_page=start_page, to_page=end_page - 1)
+        
+        part_buffer = io.BytesIO()
+        new_doc.save(part_buffer, garbage=4, deflate=True)
+        new_doc.close()
+        
+        output_files.append((f"phan_{i+1}.pdf", part_buffer.getvalue()))
     
-    if result_size:
-        print(f"\nXong! Bạn hãy kiểm tra file: {output_file}")
-        if result_size > 5:
-            print("Cảnh báo: File vẫn trên 5MB. Có thể do nội dung gốc quá phức tạp.")
-    else:
-        print("\nNén thất bại. Vui lòng kiểm tra lại đường dẫn cài đặt Ghostscript.")
-import os
-import sys
-import subprocess
+    doc.close()
+    return output_files
 
-try:
-    import fitz  # PyMuPDF
-except ImportError:
-    print("Đang cài đặt thư viện PyMuPDF...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "pymupdf"])
-    import fitz
+# --- GIAO DIỆN CHI TIẾT ---
+uploaded_file = st.file_uploader("Kéo thả hoặc chọn file PDF tại đây", type=["pdf"])
 
-def split_pdf_into_parts(input_path, num_parts=3):
+if uploaded_file is not None:
+    file_bytes = uploaded_file.read()
+    file_size_mb = len(file_bytes) / (1024 * 1024)
+    st.write(f"📁 Tên file: `{uploaded_file.name}`")
+    st.write(f"⚖️ Dung lượng gốc: `{file_size_mb:.2f} MB`")
+
+    if option == "Nén PDF (Giảm dung lượng)":
+        st.subheader("Cấu hình nén")
+        quality = st.slider("Chọn chất lượng (DPI thấp = File nhỏ hơn)", 50, 150, 72)
+        
+        if st.button("Bắt đầu nén ngay"):
+            with st.spinner("Đang nén... Vui lòng đợi trong giây lát..."):
+                result = compress_pdf_logic(file_bytes, quality)
+                new_size = len(result) / (1024 * 1024)
+                
+                st.success(f"Nén thành công! Dung lượng mới: {new_size:.2f} MB")
+                st.download_button(
+                    label="📥 Tải file đã nén về máy",
+                    data=result,
+                    file_name=f"compressed_{uploaded_file.name}",
+                    mime="application/pdf"
+                )
+
+    elif option == "Cắt PDF (Chia nhỏ file)":
+        st.subheader("Cấu hình cắt file")
+        num_parts = st.number_input("Bạn muốn cắt thành mấy phần?", min_value=2, max_value=10, value=3)
+        
+        if st.button("Bắt đầu cắt file"):
+            with st.spinner("Đang xử lý cắt file..."):
+                parts = split_pdf_logic(file_bytes, num_parts)
+                
+                # Tạo file ZIP để tải tất cả các phần về một lúc
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
+                    for filename, data in parts:
+                        zip_file.writestr(filename, data)
+                
+                st.success(f"Đã cắt thành công {num_parts} phần!")
+                st.download_button(
+                    label="📥 Tải tất cả các phần (File .ZIP)",
+                    data=zip_buffer.getvalue(),
+                    file_name="pdf_parts_mr_dat.zip",
+                    mime="application/zip"
+                )
+
+# --- FOOTER ---
+st.markdown("---")
+st.markdown(
     """
-    Cắt file PDF thành số phần chỉ định.
-    """
-    if not os.path.exists(input_path):
-        # Kiểm tra nếu file không có đuôi .pdf
-        if os.path.exists("nen 1"):
-            input_path = "nen 1"
-        else:
-            print(f"Lỗi: Không tìm thấy file {input_path}")
-            return
-
-    print(f"--- Đang bắt đầu cắt file: {input_path} ---")
-    
-    try:
-        # Mở file gốc
-        doc = fitz.open(input_path)
-        total_pages = len(doc)
-        
-        if total_pages < num_parts:
-            print("Lỗi: Số trang ít hơn số phần muốn cắt.")
-            return
-
-        # Tính toán số trang cho mỗi phần
-        pages_per_part = total_pages // num_parts
-        
-        for i in range(num_parts):
-            start_page = i * pages_per_part
-            # Phần cuối cùng sẽ lấy hết các trang còn lại
-            if i == num_parts - 1:
-                end_page = total_pages
-            else:
-                end_page = (i + 1) * pages_per_part
-            
-            # Tạo file mới cho từng phần
-            new_doc = fitz.open()
-            new_doc.insert_pdf(doc, from_page=start_page, to_page=end_page - 1)
-            
-            output_filename = f"nen_1_phân_phần_{i+1}.pdf"
-            new_doc.save(output_filename, garbage=4, deflate=True)
-            new_doc.close()
-            
-            size_mb = os.path.getsize(output_filename) / (1024 * 1024)
-            print(f"Đã tạo: {output_filename} | Trang {start_page+1}-{end_page} | Dung lượng: {size_mb:.2f} MB")
-
-        doc.close()
-        print("\n--- Hoàn thành! Sếp sẽ hài lòng với 3 file này ---")
-        
-    except Exception as e:
-        print(f"Có lỗi xảy ra: {e}")
-
-if __name__ == "__main__":
-    # Tên file của bạn
-    file_name = "nen 1.pdf"
-    split_pdf_into_parts(file_name, num_parts=3)
+    <div style='text-align: center; color: gray;'>
+        Bản quyền © 2024 thuộc về <b>Mr Đạt - 0986.053.006</b><br>
+        <i>Chuyên viên BHXH Thuận An - Hỗ trợ xử lý hồ sơ nhanh chóng</i>
+    </div>
+    """, 
+    unsafe_allow_html=True
+)
